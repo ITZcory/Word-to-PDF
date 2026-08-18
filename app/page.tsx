@@ -1,6 +1,8 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useRef, useState } from "react";
+import type { User } from "@supabase/supabase-js";
+import { supabase } from "./lib/supabase";
 
 type Stage = "idle" | "ready" | "converting" | "done" | "error";
 
@@ -21,6 +23,71 @@ export default function Home() {
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authMessage, setAuthMessage] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ?? null);
+      setAuthLoading(false);
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  const submitAuth = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setAuthMessage("");
+    if (password.length < 8) {
+      setAuthMessage("密码至少需要 8 位");
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      if (authMode === "register") {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: { emailRedirectTo: window.location.origin },
+        });
+        if (error) throw error;
+        if (!data.session) {
+          setAuthMessage("注册邮件已发送，请前往邮箱完成验证后再登录");
+          setAuthMode("login");
+          setPassword("");
+        }
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
+      }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "操作失败，请稍后重试";
+      const translated = text.includes("Invalid login")
+        ? "邮箱或密码不正确"
+        : text.includes("already registered")
+          ? "这个邮箱已经注册，请直接登录"
+          : text.includes("Email not confirmed")
+            ? "请先打开注册邮件完成邮箱验证"
+            : text;
+      setAuthMessage(translated);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    reset();
+  };
 
   const chooseFile = (nextFile?: File) => {
     if (!nextFile) return;
@@ -143,6 +210,66 @@ export default function Home() {
     }
   };
 
+  if (authLoading) {
+    return (
+      <main className="auth-shell loading-shell">
+        <a className="brand auth-brand" href="#"><span className="brand-mark">W</span><span>轻转</span></a>
+        <div className="auth-loader" aria-label="正在检查登录状态" />
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="auth-shell">
+        <nav className="auth-nav">
+          <a className="brand" href="#"><span className="brand-mark">W</span><span>轻转</span></a>
+          <span><b>●</b> 文档仅在浏览器本地处理</span>
+        </nav>
+        <section className="auth-layout">
+          <div className="auth-intro">
+            <div className="eyebrow"><span>✦</span> 免费 · 安全 · 云端账号</div>
+            <h1>登录后，轻松完成<br /><em>Word 转 PDF</em></h1>
+            <p>账号由 Supabase 云端安全管理，Word 文档不会上传云端，转换始终在你的浏览器中完成。</p>
+            <div className="auth-promises">
+              <span><b>✓</b> 邮箱注册</span>
+              <span><b>✓</b> 云端登录状态</span>
+              <span><b>✓</b> 文档不离开设备</span>
+            </div>
+          </div>
+          <div className="auth-card">
+            <div className="auth-tabs" role="tablist" aria-label="登录或注册">
+              <button className={authMode === "login" ? "active" : ""} type="button" onClick={() => { setAuthMode("login"); setAuthMessage(""); }}>登录</button>
+              <button className={authMode === "register" ? "active" : ""} type="button" onClick={() => { setAuthMode("register"); setAuthMessage(""); }}>注册</button>
+            </div>
+            <div className="auth-card-copy">
+              <h2>{authMode === "login" ? "欢迎回来" : "创建轻转账号"}</h2>
+              <p>{authMode === "login" ? "登录后继续转换你的文档" : "使用邮箱和密码即可免费注册"}</p>
+            </div>
+            <form onSubmit={submitAuth} className="auth-form">
+              <label>
+                <span>邮箱地址</span>
+                <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" required />
+              </label>
+              <label>
+                <span>密码</span>
+                <div className="password-field">
+                  <input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" autoComplete={authMode === "login" ? "current-password" : "new-password"} minLength={8} required />
+                  <button type="button" onClick={() => setShowPassword((value) => !value)}>{showPassword ? "隐藏" : "显示"}</button>
+                </div>
+              </label>
+              {authMessage && <div className={`auth-message ${authMessage.includes("已发送") ? "success" : ""}`} role="status">{authMessage}</div>}
+              <button className="primary-button auth-submit" type="submit" disabled={authBusy}>
+                {authBusy ? "请稍候…" : authMode === "login" ? "登录并开始转换" : "创建免费账号"}
+              </button>
+            </form>
+            <small className="auth-note">注册即表示你同意仅将邮箱用于账号认证。我们不会上传或保存你的 Word 文档。</small>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="site-shell">
       <nav className="topbar" aria-label="主导航">
@@ -155,11 +282,18 @@ export default function Home() {
           <a href="#features">功能特点</a>
           <a href="#help">使用帮助</a>
         </div>
-        <span className="privacy-pill"><span aria-hidden="true">●</span> 文件仅在本地处理</span>
+        <div className="top-actions">
+          <span className="privacy-pill"><span aria-hidden="true">●</span> 文件仅在本地处理</span>
+          <button className="account-button" type="button" onClick={signOut} title="退出登录">
+            <span>{user.email?.slice(0, 1).toUpperCase()}</span>
+            <b>{user.email}</b>
+            <i>退出</i>
+          </button>
+        </div>
       </nav>
 
       <section className="hero" id="top">
-        <div className="eyebrow"><span>✦</span> 免费 · 无需注册 · 不限次数</div>
+        <div className="eyebrow"><span>✦</span> 免费 · 云端账号 · 不限次数</div>
         <h1>Word 转 PDF<br /><em>简单、快速、安全</em></h1>
         <p>无需上传服务器，在浏览器中完成转换。<br />你的文档，从始至终只属于你。</p>
 
